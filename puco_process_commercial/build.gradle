@@ -3,7 +3,7 @@ plugins {
     id 'application'
 }
 
-group = 'me.wwelch'
+group = 'org.example'
 version = '1.0-SNAPSHOT'
 
 repositories {
@@ -12,6 +12,9 @@ repositories {
 
 dependencies {
     testImplementation 'org.jetbrains.kotlin:kotlin-test-junit'
+    compile "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
+    compile 'org.apache.pdfbox:pdfbox:2.0.20'
+    compile 'org.apache.commons:commons-csv:1.8'
 }
 
 test {
