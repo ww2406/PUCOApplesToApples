@@ -4,7 +4,7 @@ import java.io.File
 import java.lang.Exception
 
 fun main(args: Array<String>) {
-    File("/Users/wwelch/Downloads/PUCO Apples to Apples/tests/test22/").walk().forEach { file ->
+    File("/Users/wwelch/Downloads/PUCO Apples to Apples/tests/test23/").walk().forEach { file ->
         if (file.isDirectory) {
             return@forEach
         }
