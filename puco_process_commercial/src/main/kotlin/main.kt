@@ -7,11 +7,13 @@ import java.io.FileWriter
 import java.lang.Exception
 import java.time.LocalDate
 import java.time.Month
+import java.time.Period
+import java.time.chrono.ChronoPeriod
+import java.time.temporal.ChronoUnit
+import java.time.temporal.TemporalUnit
 import java.util.*
 
-data class Record(var utility:String="", var file_date: LocalDate=LocalDate.now(), var cust_type:String="", var sco_rate:Double=0.0, var sco_eff_start:LocalDate= LocalDate.now(), var sco_eff_end:LocalDate=LocalDate.now(), var choice_company:String="", var contract_type:String="", var len_contract:String="", var choice_price_per_mcf:String="", var choice_monthly_fee:String="", var choice_etf:String="", var file_name:String="")
-
-data class Plan(var company:String="", var planId:String="", var baseRate:String="", var totalRate:String="", var length:String="", var etf:String="", var type:String="")
+data class Record(var utility:String="", var file_date: LocalDate=LocalDate.now(), var cust_type:String="", var sco_rate:Double=0.0, var sco_eff_start:LocalDate= LocalDate.now(), var sco_eff_end:LocalDate=LocalDate.now(), var sco_incl_file_dt:Boolean=true, var choice_company:String="", var choice_tariff_code:String="", var contract_type:String="", var len_contract:String="", var choice_price_per_mcf:String="", var choice_monthly_fee:String="", var choice_etf:String="", var promo_offer:String="", var intro_offer:String="", var file_name:String="")
 
 val records = mutableListOf<Record>()
 
@@ -31,7 +33,7 @@ fun extractModern(file:File, rec:Record) {
     val noNewLineText = text.replace("\n"," ")
 
     val stdModernFormat = (rec.utility!="Columbia Gas of Ohio") || (rec.utility=="Columbia Gas of Ohio" && (rec.file_date.isBefore(LocalDate.of(2016,5,13)) || rec.file_date.isAfter(LocalDate.of(2018,8,30))))
-    val regexSCO = if (stdModernFormat) Regex("(?:Dominion's|CGO's|Vectren's|Duke's) (?:current )*(?:SCO|GCR)[^\$]+(\\\$\\d\\.[\\d]+) per (MCF|Mcf|mcf|CCF|ccf|Ccf)[^-]+.{0,2}Effective\\s+([\\S]+)\\s([^,]+),\\s([\\S]+)\\s(?:through|to)\\s([\\S]+)\\s([^,]+),\\s([\\d]+).?\\s?")
+    val regexSCO = if (stdModernFormat) Regex("(?:Dominion's|CGO's|Vectren's|Duke's) (?:current )*(?:SCO|GCR)[^\$]+(\\\$[\\d\\.]+) per (MCF|Mcf|mcf|CCF|ccf|Ccf)[^-]+.{0,2}Effective\\s+([\\S]+)\\s([^,]+),\\s([\\S]+)\\s(?:through|to)\\s([\\S]+)\\s([^,]+),\\s([\\d]+).?\\s?")
                     else Regex("""Effective +(?<startMn>[A-z]+) (?<startDay>[\d]+), (?<startYear>[\d]+) through (?<endMn>[A-z]+) (?<endDay>[\d]+), (?<endYear>[\d]+) *.*?\$(?<rate>[\d.]+) per (?<units>[^\n]{3}+)""",RegexOption.MULTILINE)
     val scoMatches = regexSCO.findAll(noNewLineText)
     println(scoMatches.toList().count())
@@ -39,6 +41,10 @@ fun extractModern(file:File, rec:Record) {
     var scoRate = 0.0
     var scoEffStart = LocalDate.now()
     var scoEffEnd = LocalDate.now()
+    var scoIncludesDate = true
+
+    data class SCORange(val startDate:LocalDate, val endDate:LocalDate, val scoRate:Double)
+    val scoRanges = mutableListOf<SCORange>()
 
     scoMatches.forEach { match ->
         if (scoRate>0.0) {
@@ -71,7 +77,7 @@ fun extractModern(file:File, rec:Record) {
             }
 
             if (rec.file_date.compareTo(dtEff)>=0 && rec.file_date.compareTo(dtLastEff)<=0) {
-                scoRate = match.groupValues[1].slice(1..match.groupValues[1].length-1).toDouble()
+                scoRate = match.groupValues[1].slice(1..match.groupValues[1].length-1).replace(Regex("\\.{2,10}"),".").toDouble()
                 scoEffStart = dtEff
                 scoEffEnd = dtLastEff
             }
@@ -79,6 +85,8 @@ fun extractModern(file:File, rec:Record) {
             if (units=="ccf") {
                 scoRate = scoRate*10
             }
+
+            scoRanges.add(SCORange(LocalDate.of(yrEff,mnEff,dayEff),LocalDate.of(yrLastEff,mnLastEff,dayLastEff),match.groupValues[1].slice(1..match.groupValues[1].length-1).replace(Regex("\\.{2,10}"),".").toDouble()))
         } else {
             val groups = match.groups as MatchNamedGroupCollection
             val mnEff = Month.valueOf(groups["startMn"]!!.value.toUpperCase()).value
@@ -99,7 +107,7 @@ fun extractModern(file:File, rec:Record) {
             }
 
             if (rec.file_date.compareTo(dtEff) >= 0 && rec.file_date.compareTo(dtLastEff) <= 0) {
-                scoRate = groups["rate"]!!.value.toDouble()
+                scoRate = groups["rate"]!!.value.replace(Regex("\\.{2,10}"),".").toDouble()
                 scoEffStart = dtEff
                 scoEffEnd = dtLastEff
             }
@@ -107,35 +115,52 @@ fun extractModern(file:File, rec:Record) {
             if (units == "ccf") {
                 scoRate = scoRate * 10
             }
+
+            scoRanges.add(SCORange(LocalDate.of(yrEff,mnEff,dayEff),LocalDate.of(yrLastEff,mnLastEff,dayLastEff),groups["rate"]!!.value.replace(Regex("\\.{2,10}"),".").toDouble()))
         }
+    }
+
+    if (scoRate == 0.0) {
+        val daysSinceEnd = mutableListOf<Int>()
+        scoRanges.forEach{ rng ->
+            daysSinceEnd.add(Period.between(rng.endDate, rec.file_date).get(ChronoUnit.DAYS).toInt())
+        }
+        if (daysSinceEnd.count()>0) {
+            val minDaysIndex = daysSinceEnd.indexOf(daysSinceEnd.minOrNull()!!)
+            scoRate = scoRanges[minDaysIndex].scoRate
+            scoEffStart = scoRanges[minDaysIndex].startDate
+            scoEffEnd = scoRanges[minDaysIndex].endDate
+            scoIncludesDate = false
+        }
+
     }
 
     rec.sco_rate = scoRate
     rec.sco_eff_start = scoEffStart
     rec.sco_eff_end = scoEffEnd
+    rec.sco_incl_file_dt = scoIncludesDate
 
-    val regexChoiceOffers = Regex("([^\\n]+)\\n\\([\\d]+\\)\\s[\\d]+\\-[\\d]+\\nRate Type: (.+)\\sLength:\\s([\\d]+)\\s[^\\n]+\\n\\\$([\\d\\.]+) per (Ccf|Mcf) Monthly Fee: \\\$([\\d\\.]+) Early Termination Fee: \\\$([\\d\\.]+)[^\\n]*\\n")
+    text = text.replace(rec.utility+"\n","")
+
+    val regexChoiceOffers = Regex("(?<company>.+)\\n.+\\nTariff Code: (?<tariff>.+?) *\\nRate Type: +(?<rateType>.+?) Term Length: (?<len>\\d+).+?\\n\\\$(?<rate>[\\d\\.]+) per (?<uom>.{0,3}) Monthly Fee: \\\$(?<monthlyFee>[\\d\\.]+) Early Termination Fee: \\\$(?<etf>[\\d\\.]+)\\n(?s).+?(?-s)This (?<promoOffer>is not|is) a promotional offer\\. *\\nThis (?<introOffer>is not|is) a introductory offer\\.",RegexOption.MULTILINE)
     val choiceOffersMatches = regexChoiceOffers.findAll(text)
     println(choiceOffersMatches.toList().count())
     choiceOffersMatches.forEach { match ->
-//        println(match.groupValues[0])
-//        println(match.groupValues[1]) // company
-//        println(match.groupValues[2]) // type of contract
-//        println(match.groupValues[3]) // length of contract
-//        println(match.groupValues[4]) // price
-//        println(match.groupValues[5]) // unit
-//        println(match.groupValues[6]) // monthly fee
-//        println(match.groupValues[7]) // early termination fee
-        rec.choice_company = match.groupValues[1]
-        rec.contract_type = match.groupValues[2]
-        rec.len_contract = match.groupValues[3]
-        rec.choice_price_per_mcf = match.groupValues[4]
-        val choice_price_unit = match.groupValues[5]
+        val groups = match.groups as MatchNamedGroupCollection
+        rec.choice_company = groups["company"]!!.value
+        rec.choice_tariff_code = groups["tariff"]!!.value
+        rec.contract_type = groups["rateType"]!!.value
+        rec.len_contract = groups["len"]!!.value
+        rec.choice_price_per_mcf = groups["rate"]!!.value
+        val choice_price_unit = groups["uom"]!!.value
         if (choice_price_unit.toLowerCase()=="ccf") {
             rec.choice_price_per_mcf = (rec.choice_price_per_mcf.toDouble() * 10).toString() //because it's really in ccf
         }
-        rec.choice_monthly_fee = match.groupValues[6]
-        rec.choice_etf = match.groupValues[7]
+        rec.choice_monthly_fee = groups["monthlyFee"]!!.value
+        rec.choice_etf = groups["etf"]!!.value
+        rec.promo_offer = groups["promoOffer"]!!.value
+        rec.intro_offer = groups["introOffer"]!!.value
+
         records.add(rec.copy())
     }
 
@@ -148,7 +173,7 @@ fun processFile(file:File) {
     rec.file_name = file.name
 
     val fileSplitArray = file.nameWithoutExtension.split('_')
-    rec.utility = fileSplitArray.slice(1..fileSplitArray.count()-2).joinToString(" ")
+    rec.utility = fileSplitArray.slice(1..fileSplitArray.count()-1).joinToString(" ")
 
     rec.file_date = LocalDate.parse(fileSplitArray[0])
 
@@ -159,7 +184,7 @@ fun processFile(file:File) {
 
 fun main(args: Array<String>) {
     var counter = 1
-    val filepath = "/Users/wwelch/Downloads/PUCO Apples to Apples/Consolidated/"
+    val filepath = "/Users/wwelch/Downloads/PUCO Apples to Apples/Consolidated Commercial/"
 //    val filepath = "/Users/wwelch/Downloads/PUCO Apples to Apples/tests/test20/"
     File(filepath).walk().forEach { file ->
         if (file.isDirectory) {
@@ -169,18 +194,18 @@ fun main(args: Array<String>) {
             return@forEach
         }
         println(file.absolutePath)
-        try {
+//        try {
             processFile(file)
-        } catch (ex: Exception) {
-            println("Error file ${file.nameWithoutExtension}")
-            counter+=1
-            return@forEach
-        }
+//        } catch (ex: Exception) {
+//            println("Error file ${file.nameWithoutExtension}")
+//            counter+=1
+//            return@forEach
+//        }
         println("Processed file $counter")
         counter+=1
     }
-    var fileWriter: FileWriter = FileWriter("/Users/wwelch/Downloads/PUCO Apples to Apples/output.csv")
-    var csvPrinter: CSVPrinter = CSVPrinter(fileWriter, CSVFormat.DEFAULT.withHeader("Utility","File Date","SCO Rate","SCO Effective Start","SCO Effective End","Choice Company","Contract Type","Length of Contract","Price per Mcf","Monthly Fee","ETF","File Name"))
+    var fileWriter: FileWriter = FileWriter("/Users/wwelch/Downloads/PUCO Apples to Apples/output_commercial.csv")
+    var csvPrinter: CSVPrinter = CSVPrinter(fileWriter, CSVFormat.DEFAULT.withHeader("Utility","File Date","SCO Rate","SCO Effective Start","SCO Effective End","SCO Eff Dt Incl File Dt","Choice Company","Tariff Code","Contract Type","Length of Contract","Price per Mcf","Monthly Fee","ETF","Promo Offer","Intro Offer","File Name"))
     records.forEach { record ->
         val data = Arrays.asList(
             record.utility,
@@ -188,12 +213,16 @@ fun main(args: Array<String>) {
             record.sco_rate,
             record.sco_eff_start,
             record.sco_eff_end,
+            record.sco_incl_file_dt,
             record.choice_company,
+            record.choice_tariff_code,
             record.contract_type,
             record.len_contract,
             record.choice_price_per_mcf,
             record.choice_monthly_fee,
             record.choice_etf,
+            record.promo_offer,
+            record.intro_offer,
             record.file_name
         )
         csvPrinter.printRecord(data)
